@@ -1,0 +1,60 @@
+spring:
+  application:
+    name: helpme-backend
+  
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://localhost:5432/helpme_db
+    username: gisuser
+    password: secret123
+    driver-class-name: org.postgresql.Driver
+  
+  # JPA/Hibernate Configuration
+  jpa:
+    hibernate:
+      ddl-auto: validate  # Dùng Flyway, không để Hibernate tự tạo table
+    properties:
+      hibernate:
+        # dialect: org.hibernate.spatial.dialect.postgis.PostgisDialect
+        format_sql: true
+        show_sql: false
+    show-sql: false
+  
+  # Redis Configuration
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 60000
+  
+  # Flyway Configuration
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  
+  # File Upload Configuration
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10MB
+      max-request-size: 50MB
+
+# Custom Configuration
+jwt:
+  secret: 144272b4f791df3b305fc1178710deb1f907321ee450887fd50ec3cf2f833c7f
+  expiration: 86400000  # 24 hours in milliseconds
+
+socketio:
+  host: 0.0.0.0
+  port: 9092
+
+file:
+  upload-dir: uploads
+
+# Logging
+logging:
+  level:
+    com.helpme: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
