@@ -44,7 +44,7 @@ public class SecurityConfig {
                         .requestMatchers("/v1/auth/me").authenticated()
 
                         // Role-based access
-                        .requestMatchers("/v1/driver/**").hasRole("DRIVER")
+                        .requestMatchers("/v1/driver/**").authenticated()
                         .requestMatchers("/v1/provider/**").hasRole("PROVIDER")
 
                         // All other requests need authentication

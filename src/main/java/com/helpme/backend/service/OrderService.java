@@ -90,7 +90,7 @@ public class OrderService {
         boolean isProvider = order.getProviderId() != null &&
                 order.getProviderId().equals(user.getId());
 
-        if (!isDriver && !isProvider) {
+        if (!isDriver && !isProvider && order.getStatus() != OrderStatus.BROADCASTING) {
             throw new ForbiddenException("Access denied");
         }
 

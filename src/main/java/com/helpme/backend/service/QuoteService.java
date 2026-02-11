@@ -26,7 +26,7 @@ public class QuoteService {
     private final OrderRepository orderRepository;
     private final ProviderRepository providerRepository;
     private final UserRepository userRepository;
-private final SocketIOService socketService;  // ✅ Add this
+    private final SocketIOService socketService;  // ✅ Add this
     
     /**
      * Tạo quote mới (Provider only)
