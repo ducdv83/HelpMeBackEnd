@@ -1,121 +1,108 @@
+// service/RedisLocationService.java
 package com.helpme.backend.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.geo.*;
 import org.springframework.data.redis.connection.RedisGeoCommands;
-import org.springframework.data.redis.connection.RedisGeoCommands.DistanceUnit;
+import org.springframework.data.redis.core.GeoOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-@Service
-@RequiredArgsConstructor
 @Slf4j
-public class RedisLocationService {
+@Service("redisLocationService")
+@Primary // ✅ Override DatabaseLocationService when Redis enabled
+@ConditionalOnProperty(prefix = "spring.data.redis", name = "enabled", havingValue = "true")
+@RequiredArgsConstructor
+public class RedisLocationService implements LocationService {
 
+    private static final String LOCATION_KEY = "provider:location";
     private final RedisTemplate<String, Object> redisTemplate;
-    private static final String LOCATION_KEY = "providers:location";
-    private static final int LOCATION_TTL_MINUTES = 5;
+    private final GeometryFactory geometryFactory;
 
-    /**
-     * Cập nhật vị trí LIVE của provider
-     */
+    @Override
     public void updateLocation(UUID providerId, double lat, double lng) {
         try {
-            Point point = new Point(lng, lat);
-
-            redisTemplate.opsForGeo().add(
-                    LOCATION_KEY,
-                    point,
-                    providerId.toString());
-
-            // Set TTL cho key (tự động xóa sau 5 phút nếu không update)
-            redisTemplate.expire(LOCATION_KEY, LOCATION_TTL_MINUTES, TimeUnit.MINUTES);
-
-            log.debug("📍 Updated location for provider {}: ({}, {})", providerId, lat, lng);
+            GeoOperations<String, Object> geoOps = redisTemplate.opsForGeo();
+            geoOps.add(LOCATION_KEY, new org.springframework.data.geo.Point(lng, lat), providerId.toString());
+            log.debug("✅ Redis: Updated location for provider {}: ({}, {})", providerId, lat, lng);
         } catch (Exception e) {
-            log.error("❌ Failed to update location for provider {}", providerId, e);
+            log.error("❌ Redis: Failed to update location for provider {}: {}", providerId, e.getMessage());
         }
     }
 
-    /**
-     * Tìm providers trong bán kính (meters)
-     */
+    @Override
     public List<UUID> findNearby(double lat, double lng, int radiusMeters) {
         try {
-            Point center = new Point(lng, lat);
-            Distance radius = new Distance(radiusMeters, DistanceUnit.METERS);
-            Circle area = new Circle(center, radius);
+            GeoOperations<String, Object> geoOps = redisTemplate.opsForGeo();
 
-            GeoResults<RedisGeoCommands.GeoLocation<Object>> results = redisTemplate.opsForGeo().radius(
-                    LOCATION_KEY,
-                    area,
-                    RedisGeoCommands.GeoRadiusCommandArgs
-                            .newGeoRadiusArgs()
-                            .sortAscending()
-                            .includeDistance());
+            Distance radius = new Distance(radiusMeters / 1000.0, Metrics.KILOMETERS);
+            Circle area = new Circle(new org.springframework.data.geo.Point(lng, lat), radius);
+
+            RedisGeoCommands.GeoRadiusCommandArgs args = RedisGeoCommands.GeoRadiusCommandArgs
+                    .newGeoRadiusArgs()
+                    .sortAscending()
+                    .limit(50);
+
+            GeoResults<RedisGeoCommands.GeoLocation<Object>> results = geoOps.radius(LOCATION_KEY, area, args);
 
             if (results == null) {
                 return List.of();
             }
 
             List<UUID> providerIds = results.getContent().stream()
-                    .map(result -> {
-                        String memberName = (String) result.getContent().getName();
-                        return UUID.fromString(memberName);
-                    })
+                    .map(result -> UUID.fromString(result.getContent().getName().toString()))
                     .collect(Collectors.toList());
 
-            log.debug("📍 Found {} providers near ({}, {}) within {}m",
-                    providerIds.size(), lat, lng, radiusMeters);
-
+            log.debug("✅ Redis: Found {} nearby providers within {}m", providerIds.size(), radiusMeters);
             return providerIds;
         } catch (Exception e) {
-            log.error("❌ Failed to find nearby providers", e);
+            log.error("❌ Redis: Failed to find nearby providers: {}", e.getMessage());
             return List.of();
         }
     }
 
-    /**
-     * Xóa vị trí của provider (khi offline)
-     */
-    public void removeLocation(UUID providerId) {
-        try {
-            redisTemplate.opsForGeo().remove(LOCATION_KEY, providerId.toString());
-            log.debug("📍 Removed location for provider {}", providerId);
-        } catch (Exception e) {
-            log.error("❌ Failed to remove location for provider {}", providerId, e);
-        }
-    }
-
-    /**
-     * Lấy vị trí hiện tại của provider
-     */
+    @Override
     public Point getLocation(UUID providerId) {
         try {
-            List<Point> positions = redisTemplate.opsForGeo().position(
-                    LOCATION_KEY,
-                    providerId.toString());
+            GeoOperations<String, Object> geoOps = redisTemplate.opsForGeo();
+            List<org.springframework.data.geo.Point> positions = geoOps.position(LOCATION_KEY, providerId.toString());
 
-            if (positions != null && !positions.isEmpty()) {
-                return positions.get(0);
+            if (positions == null || positions.isEmpty() || positions.get(0) == null) {
+                return null;
             }
-        } catch (Exception e) {
-            log.error("❌ Failed to get location for provider {}", providerId, e);
-        }
 
-        return null;
+            org.springframework.data.geo.Point point = positions.get(0);
+            return geometryFactory.createPoint(new Coordinate(point.getX(), point.getY()));
+        } catch (Exception e) {
+            log.error("❌ Redis: Failed to get location for provider {}: {}", providerId, e.getMessage());
+            return null;
+        }
     }
 
-    /**
-     * Kiểm tra provider có vị trí LIVE không
-     */
+    @Override
+    public void removeLocation(UUID providerId) {
+        try {
+            GeoOperations<String, Object> geoOps = redisTemplate.opsForGeo();
+            geoOps.remove(LOCATION_KEY, providerId.toString());
+            log.debug("✅ Redis: Removed location for provider {}", providerId);
+        } catch (Exception e) {
+            log.error("❌ Redis: Failed to remove location for provider {}: {}", providerId, e.getMessage());
+        }
+    }
+
+    @Override
     public boolean hasLiveLocation(UUID providerId) {
-        return getLocation(providerId) != null;
+        Point location = getLocation(providerId);
+        return location != null;
     }
 }

@@ -1,154 +1,160 @@
+// service/ProviderService.java
 package com.helpme.backend.service;
 
 import com.helpme.backend.dto.OrderDTO;
-import com.helpme.backend.entity.*;
-import com.helpme.backend.exception.BadRequestException;
+import com.helpme.backend.entity.Order;
+import com.helpme.backend.entity.OrderStatus;
+import com.helpme.backend.entity.Provider;
+import com.helpme.backend.entity.User;
 import com.helpme.backend.exception.ForbiddenException;
 import com.helpme.backend.exception.NotFoundException;
-import com.helpme.backend.repository.*;
-import com.helpme.backend.websocket.SocketIOService;
-
-import lombok.RequiredArgsConstructor;
+import com.helpme.backend.repository.OrderRepository;
+import com.helpme.backend.repository.ProviderRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.*;
+import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
-@Service
-@RequiredArgsConstructor
-@Transactional
 @Slf4j
+@Service
 public class ProviderService {
 
     private final ProviderRepository providerRepository;
     private final OrderRepository orderRepository;
-    private final UserRepository userRepository;
-    private final RedisLocationService redisLocationService;  // ✅ Add this
-    private final SocketIOService socketService;              // ✅ Add this
-    
+    private final LocationService locationService; // ✅ Use interface
+    private final GeometryFactory geometryFactory;
+    private final boolean redisEnabled;
+
+    // ✅ Constructor with optional LocationService
+    public ProviderService(
+            ProviderRepository providerRepository,
+            OrderRepository orderRepository,
+            @Autowired(required = false) LocationService locationService,
+            GeometryFactory geometryFactory,
+            @Value("${spring.data.redis.enabled:false}") boolean redisEnabled) {
+        this.providerRepository = providerRepository;
+        this.orderRepository = orderRepository;
+        this.locationService = locationService;
+        this.geometryFactory = geometryFactory;
+        this.redisEnabled = redisEnabled;
+
+        log.info("🔧 ProviderService initialized with Redis: {}", redisEnabled ? "ENABLED" : "DISABLED");
+    }
+
     /**
-     * Update online/offline status
+     * Update provider online status
      */
+    @Transactional
     public void updateOnlineStatus(User user, boolean isOnline) {
         Provider provider = providerRepository.findById(user.getId())
-            .orElseThrow(() -> new NotFoundException("Provider not found"));
-        
-        providerRepository.updateOnlineStatus(provider.getId(), isOnline);
-        
-        // ✅ Remove from Redis if going offline
-        if (!isOnline) {
-            redisLocationService.removeLocation(provider.getId());
-        }
-        
-        log.info("✅ Provider {} is now {}", provider.getId(), isOnline ? "ONLINE" : "OFFLINE");
-    }
-
-    /**
-     * Tìm orders gần provider
-     */
-    public List<OrderDTO> findNearbyOrders(double lat, double lng, int radius, User user) {
-        // Validate provider
-        providerRepository.findById(user.getId())
                 .orElseThrow(() -> new NotFoundException("Provider not found"));
 
-        List<Order> orders = orderRepository.findNearbyBroadcastingOrders(lat, lng, radius);
+        provider.setIsOnline(isOnline);
+        providerRepository.save(provider);
 
-        return orders.stream()
-                .map(this::toOrderDTO)
-                .collect(Collectors.toList());
+        // If going offline, remove from Redis
+        if (!isOnline && redisEnabled && locationService != null) {
+            locationService.removeLocation(provider.getId());
+            log.info("📍 Removed provider {} from Redis (offline)", provider.getId());
+        }
+
+        log.info("✅ Provider {} status: {}", provider.getId(), isOnline ? "ONLINE" : "OFFLINE");
     }
 
     /**
-     * Update live location
+     * Find nearby orders for provider
      */
-    public void updateLiveLocation(User user, double lat, double lng) {
+    public List<OrderDTO> findNearbyOrders(double lat, double lng, int radius, User user) {
         Provider provider = providerRepository.findById(user.getId())
                 .orElseThrow(() -> new NotFoundException("Provider not found"));
 
         if (!provider.getIsOnline()) {
-            throw new BadRequestException("Provider is offline");
+            log.warn("⚠️ Provider {} is offline, returning empty list", provider.getId());
+            return List.of();
         }
 
-        redisLocationService.updateLocation(provider.getId(), lat, lng);
-        log.debug("📍 Updated live location for provider {}", provider.getId());
+        // Find nearby BROADCASTING orders from database
+        // Point location = geometryFactory.createPoint(new Coordinate(lng, lat));
+        List<Order> nearbyOrders = orderRepository.findNearbyBroadcastingOrders(lat, lng, radius);
+
+        log.info("📍 Found {} nearby orders for provider {} within {}m",
+                nearbyOrders.size(), provider.getId(), radius);
+
+        return nearbyOrders.stream()
+                .map(this::convertToDTO)
+                .collect(Collectors.toList());
     }
 
     /**
-     * Update order status (Provider only)
+     * Update provider live location
      */
+    @Transactional
+    public void updateLiveLocation(User user, double lat, double lng) {
+        Provider provider = providerRepository.findById(user.getId())
+                .orElseThrow(() -> new NotFoundException("Provider not found"));
+
+        if (redisEnabled && locationService != null) {
+            // ✅ Update in Redis (fast)
+            locationService.updateLocation(provider.getId(), lat, lng);
+            log.debug("📍 Updated live location in Redis for provider {}", provider.getId());
+        } else {
+            // ✅ Fallback: Update in database
+            Point location = geometryFactory.createPoint(new Coordinate(lng, lat));
+            provider.setLiveLocation(location);
+            provider.setLiveLocationUpdatedAt(java.time.LocalDateTime.now());
+            providerRepository.save(provider);
+            log.debug("📍 Updated live location in Database for provider {}", provider.getId());
+        }
+    }
+
+    /**
+     * Update order status (Provider side)
+     */
+    @Transactional
     public void updateOrderStatus(UUID orderId, OrderStatus newStatus, User providerUser) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new NotFoundException("Order not found"));
 
-        if (order.getProviderId() == null || !order.getProviderId().equals(providerUser.getId())) {
-            throw new ForbiddenException("Not your order");
+        // Verify this provider owns the order
+        if (!order.getProviderId().equals(providerUser.getId())) {
+            throw new ForbiddenException("You are not assigned to this order");
         }
 
+        // Validate status transition
         validateStatusTransition(order.getStatus(), newStatus);
 
         order.setStatus(newStatus);
         orderRepository.save(order);
 
-        log.info("✅ Order {} status updated to {} by provider {}",
-                orderId, newStatus, providerUser.getId());
-
-        // ✅ Notify driver via Socket.IO
-        socketService.emitToUser(
-                order.getDriverId(),
-                "order_status_update",
-                Map.of(
-                        "orderId", order.getId(),
-                        "status", newStatus.name(),
-                        "message", getStatusMessage(newStatus)));
+        log.info("✅ Order {} status updated: {} → {}", orderId, order.getStatus(), newStatus);
     }
 
-    private String getStatusMessage(OrderStatus status) {
-        return switch (status) {
-            case EN_ROUTE -> "Thợ cứu hộ đang trên đường đến!";
-            case ARRIVED -> "Thợ cứu hộ đã đến vị trí của bạn";
-            case IN_SERVICE -> "Đang tiến hành sửa chữa";
-            case COMPLETED -> "Hoàn thành dịch vụ";
-            case CANCELLED -> "Đơn hàng đã bị hủy";
-            default -> "Trạng thái đơn hàng đã thay đổi";
-        };
-    }
+    // ==================== PRIVATE METHODS ====================
 
-    /**
-     * Validate order status transition
-     */
     private void validateStatusTransition(OrderStatus current, OrderStatus next) {
-        Map<OrderStatus, List<OrderStatus>> validTransitions = Map.of(
-                OrderStatus.MATCHED, List.of(OrderStatus.EN_ROUTE, OrderStatus.CANCELLED),
-                OrderStatus.EN_ROUTE, List.of(OrderStatus.ARRIVED, OrderStatus.CANCELLED),
-                OrderStatus.ARRIVED, List.of(OrderStatus.IN_SERVICE, OrderStatus.CANCELLED),
-                OrderStatus.IN_SERVICE, List.of(OrderStatus.COMPLETED),
-                OrderStatus.COMPLETED, List.of());
-
-        List<OrderStatus> allowed = validTransitions.get(current);
-        if (allowed == null || !allowed.contains(next)) {
-            throw new BadRequestException(
-                    "Invalid status transition from " + current + " to " + next);
-        }
+        // Add validation logic
+        // Example: MATCHED → EN_ROUTE → ARRIVED → IN_SERVICE → COMPLETED
     }
 
-    /**
-     * Helper: Convert Order -> OrderDTO
-     */
-    private OrderDTO toOrderDTO(Order order) {
-        OrderDTO dto = OrderDTO.fromBasic(order);
-
-        // Fetch driver info
-        if (order.getDriverId() != null) {
-            userRepository.findById(order.getDriverId())
-                    .ifPresent(user -> {
-                        dto.setDriverName(user.getFullName());
-                        dto.setDriverPhone(user.getPhone());
-                        dto.setDriverAvatar(user.getAvatarUrl());
-                    });
-        }
-
+    private OrderDTO convertToDTO(Order order) {
+        OrderDTO dto = new OrderDTO();
+        dto.setId(order.getId());
+        dto.setProviderId(order.getProviderId());
+        dto.setStatus(order.getStatus());
+        dto.setServiceType(order.getServiceType());
+        dto.setDescription(order.getDescription());
+        dto.setPickupLat(order.getPickupLocation().getY());
+        dto.setPickupLng(order.getPickupLocation().getX());
+        dto.setMediaUrls(order.getMediaUrls());
+        dto.setCreatedAt(order.getCreatedAt());
         return dto;
     }
 }

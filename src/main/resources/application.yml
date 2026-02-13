@@ -4,9 +4,9 @@ spring:
   
   # Database Configuration
   datasource:
-    url: jdbc:postgresql://localhost:5432/helpme_db
-    username: gisuser
-    password: secret123
+    url: jdbc:postgresql://ep-calm-heart-a156ayee-pooler.ap-southeast-1.aws.neon.tech:5432/helpme_db
+    username: neondb_owner
+    password: npg_mXWTzEJc0tk8
     driver-class-name: org.postgresql.Driver
   
   # JPA/Hibernate Configuration
@@ -23,13 +23,15 @@ spring:
   # Redis Configuration
   data:
     redis:
-      host: localhost
-      port: 6379
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
       timeout: 60000
+      enabled: ${REDIS_ENABLED:false}
   
   # Flyway Configuration
   flyway:
-    enabled: true
+    enabled: false
     locations: classpath:db/migration
     baseline-on-migrate: true
   

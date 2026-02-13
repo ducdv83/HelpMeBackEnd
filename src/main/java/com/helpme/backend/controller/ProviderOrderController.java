@@ -1,3 +1,4 @@
+// controller/ProviderOrderController.java
 package com.helpme.backend.controller;
 
 import com.helpme.backend.dto.*;
@@ -7,12 +8,13 @@ import com.helpme.backend.exception.NotFoundException;
 import com.helpme.backend.repository.ProviderRepository;
 import com.helpme.backend.repository.UserRepository;
 import com.helpme.backend.service.AddOnService;
+import com.helpme.backend.service.LocationService; // ✅ Change to interface
 import com.helpme.backend.service.ProviderService;
 import com.helpme.backend.service.QuoteService;
-import com.helpme.backend.service.RedisLocationService;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -24,15 +26,30 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/provider")
-@RequiredArgsConstructor
 public class ProviderOrderController {
 
     private final ProviderService providerService;
     private final QuoteService quoteService;
     private final AddOnService addOnService;
-    private final RedisLocationService redisLocationService;  // ✅ Add this
-    private final ProviderRepository providerRepository;  // ✅ Add this
-    private final UserRepository userRepository;          // ✅ Add this
+    private final LocationService locationService; // ✅ Use interface, not RedisLocationService
+    private final ProviderRepository providerRepository;
+    private final UserRepository userRepository;
+
+    // ✅ Constructor with optional LocationService
+    public ProviderOrderController(
+            ProviderService providerService,
+            QuoteService quoteService,
+            AddOnService addOnService,
+            @Autowired(required = false) LocationService locationService, // ✅ Optional
+            ProviderRepository providerRepository,
+            UserRepository userRepository) {
+        this.providerService = providerService;
+        this.quoteService = quoteService;
+        this.addOnService = addOnService;
+        this.locationService = locationService;
+        this.providerRepository = providerRepository;
+        this.userRepository = userRepository;
+    }
 
     /**
      * PATCH /v1/provider/online-status
@@ -108,11 +125,19 @@ public class ProviderOrderController {
         return ResponseEntity.ok(addOn);
     }
 
+    /**
+     * POST /v1/provider/location
+     * Update live location (used by mobile for real-time tracking)
+     * 
+     * Note: This endpoint is called directly from mobile app
+     * ProviderService.updateLiveLocation() handles Redis/Database fallback
+     */
     @PostMapping("/location")
     public ResponseEntity<MessageResponse> updateLiveLocation(
             @RequestParam double lat,
             @RequestParam double lng,
             @AuthenticationPrincipal User currentUser) {
+        // ✅ Delegate to ProviderService which handles Redis/DB fallback
         providerService.updateLiveLocation(currentUser, lat, lng);
         return ResponseEntity.ok(new MessageResponse("Location updated successfully"));
     }

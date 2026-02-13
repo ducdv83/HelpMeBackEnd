@@ -26,6 +26,18 @@ public class Provider {
 
     @Column(columnDefinition = "geography(Point,4326)")
     private Point baseLocation;
+    
+    /**
+     * Real-time location when provider is EN_ROUTE (fallback for Redis)
+     */
+    @Column(name = "live_location", columnDefinition = "geography(Point,4326)")
+    private Point liveLocation;
+
+    /**
+     * Timestamp of last live location update
+     */
+    @Column(name = "live_location_updated_at")
+    private LocalDateTime liveLocationUpdatedAt;
 
     @Column(columnDefinition = "text[]")
     private String[] serviceTypes;
